@@ -10,7 +10,7 @@ type Event interface {
 }
 
 type EventCommit struct {
-	Version uint64
+	Changelist []Event
 }
 
 func (e EventCommit) Matches(watchEvent events.Event) bool {
@@ -25,13 +25,14 @@ func Watch(queue *watch.Queue, specifiers ...Event) (watch chan events.Event, ca
 	return queue.CallbackWatch(Matcher(specifiers...))
 }
 
-func ViewAndWatch(store *Store, callback func(ReadTxn) error, specifiers ...Event) (watch chan events.Event, cancel func(), err error) {
+func ViewAndWatch(store Store, callback func(ReadTxn) error, specifiers ...Event) (watch chan events.Event, cancel func(), err error) {
 	err = store.Update(func(txn Txn) error {
 		err := callback(txn)
 		if err != nil {
 			return err
 		}
 		watch, cancel = Watch(store.WatchQueue(), specifiers...)
+		return nil
 	})
 	if watch != nil && err != nil {
 		cancel()

@@ -1,26 +1,23 @@
 package txnstore
 
 import (
-	"context"
 	"time"
 
 	"github.com/docker/swarmkit/watch"
 	memdb "github.com/hashicorp/go-memdb"
 )
 
+const (
+	IndexID = "id"
+)
+
 var (
 	WedgeTimeout = 30 * time.Second
 )
 
-type Proposer interface {
-	ProposeValue(ctx context.Context, events []Event, callback func()) error
-	GetVersion() uint64
-}
-
 type Object interface {
 	GetID() string
 	GetVersion() uint64
-	SetVersion(uint64)
 	Copy() Object
 	EventCreate() Event
 	EventUpdate(oldObj Object) Event
@@ -36,15 +33,14 @@ type Store interface {
 }
 
 type store struct {
-	updateLock TimedMutex
 	db         *memdb.MemDB
 	schema     *memdb.DBSchema
 	queue      *watch.Queue
-	proposer   Proposer
+	updateLock TimedMutex
 }
 
-func NewStore(proposer Proposer, tables []*memdb.TableSchema) (Store, error) {
-	schema = &memdb.DBSchema{
+func NewStore(tables []*memdb.TableSchema) (Store, error) {
+	schema := &memdb.DBSchema{
 		Tables: make(map[string]*memdb.TableSchema),
 	}
 	for _, table := range tables {
@@ -57,10 +53,9 @@ func NewStore(proposer Proposer, tables []*memdb.TableSchema) (Store, error) {
 	}
 
 	return &store{
-		db:       db,
-		schema:   schema,
-		queue:    watch.NewQueue(),
-		proposer: proposer,
+		db:     db,
+		schema: schema,
+		queue:  watch.NewQueue(),
 	}, nil
 }
 
@@ -83,20 +78,12 @@ func (s *store) Wedged() bool {
 
 func (s *store) View(callback func(ReadTxn)) {
 	dbTxn := s.db.Txn(false)
-
-	readTxn := readTxn{dbTxn}
-	callback(readTxn)
-	dbtxn.Commit()
+	callback(&readTxn{dbTxn})
 }
 
 func (s *store) Update(callback func(Txn) error) (err error) {
 	s.updateLock.Lock()
 	defer s.updateLock.Unlock()
-
-	var version uint64
-	if s.proposer != nil {
-		version = s.proposer.GetVersion()
-	}
 
 	dbTxn := s.db.Txn(true)
 	defer func() {
@@ -105,29 +92,18 @@ func (s *store) Update(callback func(Txn) error) (err error) {
 		}
 	}()
 
-	txn := newTxn(dbTxn, version)
-
-	err = callback(&txn)
+	txn := newTxn(dbTxn)
+	err = callback(txn)
 	if err != nil {
 		return err
 	}
 
-	if proposer == nil {
-		dbTxn.Commit()
-	} else {
-		if len(txn.changelist) > 0 {
-			err = s.proposer.ProposeValue(context.Background(), txn.changelist, func() {
-				dbTxn.Commit()
-			})
-		} else {
-			dbTxn.Commit()
-		}
-	}
+	dbTxn.Commit()
 	for _, change := range txn.changelist {
 		s.queue.Publish(change)
-		if len(txn.changelist) > 0 {
-			s.queue.Publish(EventCommit{Version: version})
-		}
+	}
+	if len(txn.changelist) > 0 {
+		s.queue.Publish(EventCommit{Changelist: txn.changelist})
 	}
 
 	return nil
@@ -137,9 +113,7 @@ func (s *store) Batch(callback func(Batch) error) error {
 	s.updateLock.Lock()
 	defer s.updateLock.Unlock()
 
-	batch := batch{
-		store: s,
-	}
+	batch := batch{store: s}
 	batch.newTxn()
 
 	err := callback(&batch)

@@ -1,8 +1,11 @@
 package txnstore
 
 import (
-	"context"
 	"runtime"
+)
+
+const (
+	MaxChangesPerTransaction = 200
 )
 
 type Batch interface {
@@ -10,12 +13,9 @@ type Batch interface {
 }
 
 type batch struct {
-	txn                     txn
-	store                   *Store
-	applied                 int
-	transactionSizeEstimate int
-	changelistLen           int
-	err                     error
+	txn   *txn
+	store *store
+	err   error
 }
 
 func (b *batch) Update(callback func(Txn) error) error {
@@ -23,22 +23,12 @@ func (b *batch) Update(callback func(Txn) error) error {
 		return b.err
 	}
 
-	err := callback(&b.txn)
+	err := callback(b.txn)
 	if err != nil {
 		return err
 	}
 
-	b.applied++
-	for b.changelistLen < len(b.txn.changelist) {
-		sa, err := NewAction(b.txn.changelist[b.changelistLen])
-		if err != nil {
-			return err
-		}
-		b.transactionSizeEstimate += sa.Size()
-		b.changelistLen++
-	}
-
-	if b.changelistLen >= MaxChangesPerTransaction || b.transactionSizeEstimate >= (MaxTransactionBytes*3)/4 {
+	if len(b.txn.changelist) >= MaxChangesPerTransaction {
 		err := b.commit()
 		if err != nil {
 			return err
@@ -56,16 +46,8 @@ func (b *batch) Update(callback func(Txn) error) error {
 }
 
 func (b *batch) newTxn() {
-	var version uint64
-	if b.store.proposer != nil {
-		version = b.store.proposer.GetVersion()
-	}
-
 	dbTxn := b.store.db.Txn(true)
-	b.txn = newTxn(dbTxn, version)
-
-	b.transactionSizeEstimate = 0
-	b.changelistLen = 0
+	b.txn = newTxn(dbTxn)
 }
 
 func (b *batch) commit() (err error) {
@@ -76,24 +58,12 @@ func (b *batch) commit() (err error) {
 		}
 	}()
 
-	if b.store.proposer != nil {
-		if len(b.txn.changelist) > 0 {
-			err = b.store.proposer.ProposeValue(context.Background(), b.txn.changelist, func() {
-				b.txn.dbTxn.Commit()
-			})
-			if err != nil {
-				return err
-			}
-		} else {
-			b.txn.dbTxn.Commit()
-		}
-	}
-
+	b.txn.dbTxn.Commit()
 	for _, change := range b.txn.changelist {
-		b.store.queue.Publish(c)
+		b.store.queue.Publish(change)
 	}
 	if len(b.txn.changelist) != 0 {
-		b.store.queue.Publish(EventCommit{})
+		b.store.queue.Publish(EventCommit{Changelist: b.txn.changelist})
 	}
 
 	return nil

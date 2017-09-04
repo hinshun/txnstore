@@ -23,65 +23,57 @@ type Txn interface {
 
 type txn struct {
 	readTxn
-	version    uint64
 	changelist []Event
 }
 
-func newTxn(dbTxn *memdb.Txn, version uint64) {
+func newTxn(dbTxn *memdb.Txn) *txn {
 	return &txn{
-		dbTxn:   dbTxn,
-		version: version,
+		readTxn: readTxn{dbTxn},
 	}
 }
 
 func (t *txn) Create(table string, obj Object) error {
-	if t.Lookup(table, indexID, obj.GetID()) != nil {
+	if t.Lookup(table, IndexID, obj.GetID()) != nil {
 		return ErrExist
 	}
 
 	copy := obj.Copy()
-	copy.SetVersion(t.version)
 	err := t.dbTxn.Insert(table, copy)
 	if err != nil {
 		return err
 	}
 
 	t.changelist = append(t.changelist, copy.EventCreate())
-	obj.SetVersion(t.version)
 	return nil
 }
 
 func (t *txn) Update(table string, obj Object) error {
-	oldObj := t.Lookup(table, indexID, obj.GetID())
+	oldObj := t.Lookup(table, IndexID, obj.GetID())
 	if oldObj == nil {
 		return ErrNotExist
 	}
 
-	if t.version != nil {
-		if oldObj.GetVersion() != obj.GetVersion() {
-			return ErrSequenceConflict
-		}
+	if oldObj.GetVersion() != obj.GetVersion() {
+		return ErrSequenceConflict
 	}
 
 	copy := obj.Copy()
-	copy.SetVersion(t.version)
-	err = t.dbTxn.Insert(table, copy)
+	err := t.dbTxn.Insert(table, copy)
 	if err != nil {
 		return err
 	}
 
 	t.changelist = append(t.changelist, copy.EventUpdate(oldObj))
-	obj.SetVersion(t.version)
 	return nil
 }
 
 func (t *txn) Delete(table, id string) error {
-	obj := t.Lookup(table, indexID, id)
+	obj := t.Lookup(table, IndexID, id)
 	if obj == nil {
 		return ErrNotExist
 	}
 
-	err := t.dbTxn.Delete(table, n)
+	err := t.dbTxn.Delete(table, obj)
 	if err != nil {
 		return err
 	}

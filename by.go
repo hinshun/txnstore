@@ -4,10 +4,23 @@ import memdb "github.com/hashicorp/go-memdb"
 
 type By interface {
 	Get(get GetFunc) ([]memdb.ResultIterator, error)
-	GetArgs() []interface{}
 }
 
 type GetFunc func(index string, args ...interface{}) (memdb.ResultIterator, error)
+
+func All() By {
+	return &all{}
+}
+
+type all struct{}
+
+func (a *all) Get(get GetFunc) ([]memdb.ResultIterator, error) {
+	iter, err := get(IndexID)
+	if err != nil {
+		return nil, err
+	}
+	return []memdb.ResultIterator{iter}, nil
+}
 
 func Or(bys ...By) By {
 	return &or{bys}
@@ -17,16 +30,16 @@ type or struct {
 	bys []By
 }
 
-func (o *Or) Get(get GetFunc) ([]memdb.ResultIterator, error) {
-	var iters []memdb.ResultIterator
+func (o *or) Get(get GetFunc) ([]memdb.ResultIterator, error) {
+	var orIters []memdb.ResultIterator
 	for _, by := range o.bys {
-		iter, err := by.Get(get)
+		iters, err := by.Get(get)
 		if err != nil {
 			return nil, err
 		}
-		iters = append(iters, iter)
+		orIters = append(orIters, iters...)
 	}
-	return iters, nil
+	return orIters, nil
 }
 
 func ByID(id string) By {
@@ -38,9 +51,9 @@ type byID struct {
 }
 
 func (b *byID) Get(get GetFunc) ([]memdb.ResultIterator, error) {
-	iter, err := get(indexID, b.id)
+	iter, err := get(IndexID, b.id)
 	if err != nil {
 		return nil, err
 	}
-	return []memdbResultIterator{iter}, nil
+	return []memdb.ResultIterator{iter}, nil
 }
